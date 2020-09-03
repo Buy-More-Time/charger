@@ -51,7 +51,7 @@ jobs:
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: REPLACE
+          ECR_REPOSITORY: main
           IMAGE_TAG: ${{ github.sha }}
         run: |
           # Build a docker container and
@@ -83,13 +83,13 @@ jobs:
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: ecs-task-definition.json
-          container-name: REPLACE
+          container-name: charger
           image: ${{ steps.build-image.outputs.image }}
 
       - name: Deploy Amazon ECS task definition
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: REPLACE
-          cluster: REPLACE
+          service: charger
+          cluster: main
           wait-for-service-stability: true
