@@ -77,6 +77,7 @@ jobs:
           CURRENCY_CODE_COLUMN: ${{ secrets.CURRENCY_CODE_COLUMN}}
           PAID_COLUMN: ${{ secrets.PAID_COLUMN}}
           NOTES_COLUMN: ${{ secrets.NOTES_COLUMN}}
+          POLL_INTERVAL: ${{ secrets.POLL_INTERVAL}}
 
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def

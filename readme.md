@@ -11,6 +11,7 @@ Here are some required environment variables needed for this application, the re
 | AIRTABLE_API_KEY |  Airtable developer API key |
 | AIRTABLE_BASE_ID |  Airtable Base ID |
 | TABLE_NAME | Airtable invoice table name |
+| POLL_INTERVAL | Time in seconds between each poll of Airtable invoice records|
 
 #### Table Setup
 Charger expects your table to have at least five separate columns. These columns should be created beforehand and are provided to the application through environment variables. These are the environment variables.

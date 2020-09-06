@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,7 +20,15 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type Invoice struct {
+	airtableRecordID string
+	invoiceAmount    float64
+	currencyCode     string
+}
+
 func main() {
+	var pollInterval int
+
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Error loading .env file")
@@ -35,6 +44,11 @@ func main() {
 	notesColumn := os.Getenv("NOTES_COLUMN")
 	currencyCodeColumn := os.Getenv("CURRENCY_CODE_COLUMN")
 	dateColumn := os.Getenv("DATE_COLUMN")
+
+	pollInterval, err = strconv.Atoi(os.Getenv("POLL_INTERVAL"))
+	if err != nil {
+		pollInterval = 60
+	}
 
 	airtableClient, err := airtable.NewAirtableClient(airtableAPIKey, baseID)
 	if err != nil {
@@ -54,7 +68,7 @@ func main() {
 					currencyCodeColumn,
 					dateColumn,
 				},
-				FilterByFormula: fmt.Sprintf(`NOT({%s} = 'true')`, paidColumn),
+				FilterByFormula: fmt.Sprintf(`AND(NOT({%s} = 'true'), NOT({%s} = 'false'))`, paidColumn, paidColumn),
 				PageSize:        100, // max records return allowed from airtable
 			})
 
@@ -63,12 +77,11 @@ func main() {
 				return
 			}
 
-			// using records fetch payment methods for customer ID
+			// generate a list of all invoices for a given customer, BuyMoreTime wants to chargeStripe all the customer's
+			// invoices at once instead of each individually
+			customerInvoices := map[string][]Invoice{}
 			for _, record := range records.Records {
-				// if any of the required fields are absent, we skip the record. The assumption is that someone is
-				// still entering information for that record and we should hold off charging until we have all the
-				// information
-
+				invoice := Invoice{}
 				// check to see if theres a date, bill only on or after said date
 				val, ok := record.Fields[dateColumn]
 				if ok {
@@ -118,6 +131,11 @@ func main() {
 				currencyCode := fmt.Sprintf("%s", val)
 				currencyCode = strings.ToLower(currencyCode)
 
+				if currencyCode != "usd" {
+					log.Printf("unsupported currency code, skipping")
+					continue
+				}
+
 				// invoiceAmount must be a float64
 				invoiceAmount, ok := record.Fields[invoiceAmountColumn]
 				if !ok {
@@ -125,29 +143,53 @@ func main() {
 					continue
 				}
 
-				fields := map[string]interface{}{}
+				invoice.currencyCode = currencyCode
+				invoice.invoiceAmount = invoiceAmount.(float64)
+				invoice.airtableRecordID = record.ID
 
-				// set paid and notes column for patch update
-				confirmationNumber, err := charge(customerID, currencyCode, invoiceAmount.(float64))
-				if err != nil {
-					fields[notesColumn] = fmt.Sprintf("Error charging customer through Stripe: %v", err.Error())
-				} else {
-					fields[notesColumn] = fmt.Sprintf("Stripe Confirmation Number: %s", confirmationNumber)
-					fields[paidColumn] = "true"
+				customerInvoices[customerID] = append(customerInvoices[customerID], invoice)
+			}
+
+			// for each customer create a chargeStripe for all invoices sharing the same currency
+			for customerID, invoices := range customerInvoices {
+				var amount float64
+				var currencyCode string
+
+				// sum the invoices
+				for _, invoice := range invoices {
+					amount += invoice.invoiceAmount
+
+					// TODO: if you plan on support multiple currencies, this will need to be ripped out and redone
+					currencyCode = invoice.currencyCode
 				}
 
-				// update only the notes and paid columns
-				updatedRecord := airtable.Record{ID: record.ID, Fields: fields}
-				err = airtableClient.PartialUpdate(airtable.PartialUpdateOptions{TableName: tableName}, updatedRecord)
+				updateFields := map[string]interface{}{}
+
+				// set paid and notes column for patch update
+				confirmationNumber, err := chargeStripe(customerID, currencyCode, amount)
 				if err != nil {
-					log.Printf("error updating airtable records %v", err)
-					return
+					updateFields[notesColumn] = fmt.Sprintf("Error charging customer through Stripe: %v", err.Error())
+					updateFields[paidColumn] = "false"
+				} else {
+					updateFields[notesColumn] = confirmationNumber
+					updateFields[paidColumn] = "true"
+				}
+
+				for _, invoice := range invoices {
+					// update only the notes and paid columns
+					updatedRecord := airtable.Record{ID: invoice.airtableRecordID, Fields: updateFields}
+					err = airtableClient.PartialUpdate(airtable.PartialUpdateOptions{TableName: tableName}, updatedRecord)
+					if err != nil {
+						log.Printf("error updating airtable records %v", err)
+						return
+					}
 				}
 
 				// don't overload the Airtable API
 				time.Sleep(time.Second * 1)
 			}
-			time.Sleep(time.Second * 1)
+
+			time.Sleep(time.Duration(pollInterval) * time.Second)
 		}
 	}()
 
@@ -157,7 +199,7 @@ func main() {
 	<-sc
 }
 
-func charge(customerID string, currencyCode string, invoiceAmount float64) (confirmation string, err error) {
+func chargeStripe(customerID string, currencyCode string, invoiceAmount float64) (confirmation string, err error) {
 	var amount int64
 
 	sc := &client.API{}
@@ -171,7 +213,7 @@ func charge(customerID string, currencyCode string, invoiceAmount float64) (conf
 	}
 
 	if amount <= 0 {
-		return "", errors.New("cannot charge 0 amount")
+		return "", errors.New("cannot chargeStripe 0 amount")
 	}
 
 	i := sc.PaymentMethods.List(&stripe.PaymentMethodListParams{
@@ -210,5 +252,5 @@ func charge(customerID string, currencyCode string, invoiceAmount float64) (conf
 		return confirm.ID, nil
 	}
 
-	return "", errors.New("unable to charge any payment method on file")
+	return "", errors.New("unable to chargeStripe any payment method on file")
 }

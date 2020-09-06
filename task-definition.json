@@ -38,6 +38,9 @@
       },{
         "name": "NOTES_COLUMN",
         "value": "${NOTES_COLUMN}"
+      },{
+        "name": "POLL_INTERVAL",
+        "value": "${POLL_INTERVAL}"
       }
       ],
       "resourceRequirements": null,

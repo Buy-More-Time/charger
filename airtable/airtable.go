@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -119,7 +120,11 @@ func (c *Client) get(url *url.URL, out interface{}) error {
 	}
 
 	if resp.StatusCode < 199 || resp.StatusCode > 299 {
-		return errors.New("api returned non-200 response")
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		return errors.New(string(bodyBytes))
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
