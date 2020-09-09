@@ -68,8 +68,9 @@ func main() {
 					currencyCodeColumn,
 					dateColumn,
 				},
+				// avoid fetching already paid, or failed invoices
 				FilterByFormula: fmt.Sprintf(`AND(NOT({%s} = 'true'), NOT({%s} = 'false'))`, paidColumn, paidColumn),
-				PageSize:        100, // max records return allowed from airtable
+				PageSize:        100, // max records return allowed from airtable TODO: Handle pagination when necessary, right now the numbers are too low
 			})
 
 			if err != nil {
@@ -131,6 +132,7 @@ func main() {
 				currencyCode := fmt.Sprintf("%s", val)
 				currencyCode = strings.ToLower(currencyCode)
 
+				// TODO: If you want to handle more types of currency you will need to refactor this and the function below to make it work
 				if currencyCode != "usd" {
 					log.Printf("unsupported currency code, skipping")
 					continue
@@ -199,6 +201,7 @@ func main() {
 	<-sc
 }
 
+// given the correct information pull a customer's payment methods and charge the provided amount to Stripe
 func chargeStripe(customerID string, currencyCode string, invoiceAmount float64) (confirmation string, err error) {
 	var amount int64
 
