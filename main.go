@@ -82,17 +82,34 @@ func main() {
 			// invoices at once instead of each individually
 			customerInvoices := map[string][]Invoice{}
 			for _, record := range records.Records {
+				// verify that if we have a value in the paid column, it's not true or false
+				val, ok := record.Fields[paidColumn]
+				if ok {
+					if fmt.Sprintf("%v", val) == "true" {
+						log.Printf("customer already charged for this record, skipping")
+						continue
+					}
+				}
+
 				invoice := Invoice{}
 				// check to see if theres a date, bill only on or after said date
-				val, ok := record.Fields[dateColumn]
+				val, ok = record.Fields[dateColumn]
 				if ok {
 					date, err := time.Parse("2006-01-02", fmt.Sprintf("%v", val))
 					if err == nil {
+						loc, err := time.LoadLocation(os.Getenv("TIMEZONE"))
+						if err != nil {
+							log.Fatal("incorrect time location!")
+							return
+						}
+
 						// if we're not on or after date, skip this record
-						if !time.Now().After(date) {
+						if !time.Now().In(loc).After(date) {
+							log.Printf("date in future, skipping")
 							continue
 						}
 					}
+
 				} else if !ok {
 					log.Printf("date not present, skipping")
 					continue
@@ -235,6 +252,7 @@ func chargeStripe(customerID string, currencyCode string, invoiceAmount float64)
 
 		pi, err := sc.PaymentIntents.New(&stripe.PaymentIntentParams{
 			Amount:        stripe.Int64(amount),
+			Description:   stripe.String("Airtable AutoCharger"),
 			Customer:      stripe.String(fmt.Sprintf("%v", customerID)),
 			Currency:      stripe.String(fmt.Sprintf("%s", currencyCode)),
 			PaymentMethod: stripe.String(paymentID),

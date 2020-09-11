@@ -41,6 +41,9 @@
       },{
         "name": "POLL_INTERVAL",
         "value": "${POLL_INTERVAL}"
+      },{
+        "name": "TIMEZONE",
+        "value": "${TIMEZONE}"
       }
       ],
       "resourceRequirements": null,
