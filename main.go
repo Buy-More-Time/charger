@@ -162,6 +162,11 @@ func main() {
 					continue
 				}
 
+				if invoiceAmount.(float64) == 0 {
+					log.Printf("invoice amount not greater than 0, skipping")
+					continue
+				}
+
 				invoice.currencyCode = currencyCode
 				invoice.invoiceAmount = invoiceAmount.(float64)
 				invoice.airtableRecordID = record.ID
