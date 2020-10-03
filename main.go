@@ -29,10 +29,7 @@ type Invoice struct {
 func main() {
 	var pollInterval int
 
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
+	godotenv.Load()
 
 	airtableAPIKey := os.Getenv("AIRTABLE_API_KEY")
 	baseID := os.Getenv("AIRTABLE_BASE_ID")
@@ -45,7 +42,7 @@ func main() {
 	currencyCodeColumn := os.Getenv("CURRENCY_CODE_COLUMN")
 	dateColumn := os.Getenv("DATE_COLUMN")
 
-	pollInterval, err = strconv.Atoi(os.Getenv("POLL_INTERVAL"))
+	pollInterval, err := strconv.Atoi(os.Getenv("POLL_INTERVAL"))
 	if err != nil {
 		pollInterval = 60
 	}
