@@ -80,6 +80,7 @@ jobs:
           POLL_INTERVAL: ${{ secrets.POLL_INTERVAL}}
           TIMEZONE: ${{ secrets.TIMEZONE}}
           DATE_COLUMN: ${{ secrets.DATE_COLUMN }}
+          STALE_DAYS : ${{ secrets.STALE_DAYS }}
 
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def

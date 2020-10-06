@@ -28,6 +28,7 @@ type Invoice struct {
 
 func main() {
 	var pollInterval int
+	var staleDays int
 
 	godotenv.Load()
 
@@ -42,7 +43,12 @@ func main() {
 	currencyCodeColumn := os.Getenv("CURRENCY_CODE_COLUMN")
 	dateColumn := os.Getenv("DATE_COLUMN")
 
-	pollInterval, err := strconv.Atoi(os.Getenv("POLL_INTERVAL"))
+	staleDays, err := strconv.Atoi(os.Getenv("STALE_DAYS"))
+	if err != nil {
+		staleDays = -7
+	}
+
+	pollInterval, err = strconv.Atoi(os.Getenv("POLL_INTERVAL"))
 	if err != nil {
 		pollInterval = 60
 	}
@@ -103,6 +109,13 @@ func main() {
 						// if we're not on or after date, skip this record
 						if !time.Now().In(loc).After(date) {
 							log.Printf("date in future, skipping")
+							continue
+						}
+
+						past := time.Now().AddDate(0, 0, staleDays)
+
+						if date.Before(past) {
+							log.Printf("pay date too old, skipping")
 							continue
 						}
 					}

@@ -47,6 +47,9 @@
       },{
         "name": "DATE_COLUMN",
         "value": "${DATE_COLUMN}"
+      }, {
+        "name": "STALE_DAYS",
+        "value": "${STALE_DAYS}"
       }
       ],
       "resourceRequirements": null,
