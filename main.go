@@ -267,7 +267,7 @@ func chargeStripe(customerID string, currencyCode string, invoiceAmount float64)
 
 		pi, err := sc.PaymentIntents.New(&stripe.PaymentIntentParams{
 			Amount:        stripe.Int64(amount),
-			Description:   stripe.String("Cleaning/Products Autocharge"),
+			Description:   stripe.String("Cleaning/Product Replacement Charge"),
 			Customer:      stripe.String(fmt.Sprintf("%v", customerID)),
 			Currency:      stripe.String(fmt.Sprintf("%s", currencyCode)),
 			PaymentMethod: stripe.String(paymentID),
