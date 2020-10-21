@@ -96,16 +96,16 @@ func main() {
 
 				invoice := Invoice{}
 				// check to see if theres a date, bill only on or after said date
+				loc, err := time.LoadLocation(os.Getenv("TIMEZONE"))
+				if err != nil {
+					log.Fatal("incorrect time location!")
+					return
+				}
+
 				val, ok = record.Fields[dateColumn]
 				if ok {
-					date, err := time.Parse("2006-01-02", fmt.Sprintf("%v", val))
+					date, err := time.ParseInLocation("2006-01-02", fmt.Sprintf("%v", val), loc)
 					if err == nil {
-						loc, err := time.LoadLocation(os.Getenv("TIMEZONE"))
-						if err != nil {
-							log.Fatal("incorrect time location!")
-							return
-						}
-
 						// if we're not on or after date, skip this record
 						if !time.Now().In(loc).After(date) {
 							log.Printf("date in future, skipping")
