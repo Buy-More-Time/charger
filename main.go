@@ -112,7 +112,7 @@ func main() {
 							continue
 						}
 
-						past := time.Now().AddDate(0, 0, staleDays)
+						past := time.Now().In(loc).AddDate(0, 0, staleDays)
 
 						if date.Before(past) {
 							log.Printf("pay date too old, skipping")
