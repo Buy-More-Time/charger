@@ -50,6 +50,22 @@
       }, {
         "name": "STALE_DAYS",
         "value": "${STALE_DAYS}"
+      },
+      {
+        "name": "ITEM_COLUMN",
+        "value": "${ITEM_COLUMN}"
+      },
+      {
+        "name": "QUANTITY_COLUMN",
+        "value": "${QUANTITY_COLUMN}"
+      },
+      {
+        "name": "PROPERTY_COLUMN",
+        "value": "${PROPERTY_COLUMN}"
+      },
+      {
+        "name": "DATE_SERVICED_COLUMN",
+        "value": "${DATE_SERVICED_COLUMN}"
       }
       ],
       "resourceRequirements": null,

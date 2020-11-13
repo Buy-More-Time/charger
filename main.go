@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,8 +23,38 @@ import (
 
 type Invoice struct {
 	airtableRecordID string
+	property         string
 	invoiceAmount    float64
 	currencyCode     string
+	item             string
+	quantity         float64
+	dateServiced     time.Time
+}
+
+type PropertyInvoice struct {
+	name  string
+	items map[string]float64
+}
+
+// sum the invoices and create the data structure necessary for handling line items in the description
+type PropertyItem struct {
+	item     string
+	quantity float64
+}
+
+// needed to sort the invoices by time serviced
+type invoiceByTime []Invoice
+
+func (p invoiceByTime) Len() int {
+	return len(p)
+}
+
+func (p invoiceByTime) Less(i, j int) bool {
+	return p[i].dateServiced.Before(p[j].dateServiced)
+}
+
+func (p invoiceByTime) Swap(i, j int) {
+	p[i], p[j] = p[j], p[i]
 }
 
 func main() {
@@ -42,6 +73,10 @@ func main() {
 	notesColumn := os.Getenv("NOTES_COLUMN")
 	currencyCodeColumn := os.Getenv("CURRENCY_CODE_COLUMN")
 	dateColumn := os.Getenv("DATE_COLUMN")
+	quantityColumn := os.Getenv("QUANTITY_COLUMN")
+	itemColumn := os.Getenv("ITEM_COLUMN")
+	propertyColumn := os.Getenv("PROPERTY_COLUMN")
+	dateServicedColumn := os.Getenv("DATE_SERVICED_COLUMN")
 
 	staleDays, err := strconv.Atoi(os.Getenv("STALE_DAYS"))
 	if err != nil {
@@ -70,6 +105,10 @@ func main() {
 					paidColumn,
 					currencyCodeColumn,
 					dateColumn,
+					quantityColumn,
+					itemColumn,
+					propertyColumn,
+					dateServicedColumn,
 				},
 				// avoid fetching already paid, or failed invoices
 				FilterByFormula: fmt.Sprintf(`AND(NOT({%s} = 'true'), NOT({%s} = 'false'))`, paidColumn, paidColumn),
@@ -125,6 +164,21 @@ func main() {
 					continue
 				}
 
+				val, ok = record.Fields[dateServicedColumn]
+				if ok {
+					serviceDate, err := time.ParseInLocation("2006-01-02", fmt.Sprintf("%v", val), loc)
+					if err != nil {
+						log.Printf("error parsing service date")
+						continue
+					}
+
+					invoice.dateServiced = serviceDate
+
+				} else if !ok {
+					log.Printf("service date not present, skipping")
+					continue
+				}
+
 				// we need to handle rollup fields here, so run reflect and extract if slice
 				var customerID string
 				val, ok = record.Fields[stripeCustomerIDColumn]
@@ -177,9 +231,30 @@ func main() {
 					continue
 				}
 
+				quantity, ok := record.Fields[quantityColumn]
+				if !ok {
+					log.Printf("quantity not present, skipping")
+					continue
+				}
+
+				item, ok := record.Fields[itemColumn]
+				if !ok {
+					log.Printf("item not present, skipping")
+					continue
+				}
+
+				propertyName, ok := record.Fields[propertyColumn]
+				if !ok {
+					log.Printf("property not present, skipping")
+					continue
+				}
+
 				invoice.currencyCode = currencyCode
 				invoice.invoiceAmount = invoiceAmount.(float64)
 				invoice.airtableRecordID = record.ID
+				invoice.quantity = quantity.(float64)
+				invoice.item = fmt.Sprintf("%v", item)
+				invoice.property = fmt.Sprintf("%v", propertyName)
 
 				customerInvoices[customerID] = append(customerInvoices[customerID], invoice)
 			}
@@ -189,18 +264,51 @@ func main() {
 				var amount float64
 				var currencyCode string
 
-				// sum the invoices
+				// month/day formatted strings
+				var startDate string
+				var endDate string
+
+				properties := map[string][]PropertyItem{}
+
 				for _, invoice := range invoices {
 					amount += invoice.invoiceAmount
 
 					// TODO: if you plan on support multiple currencies, this will need to be ripped out and redone
 					currencyCode = invoice.currencyCode
+
+					if len(properties[invoice.property]) == 0 {
+						properties[invoice.property] = []PropertyItem{}
+					}
+
+					properties[invoice.property] = append(properties[invoice.property], PropertyItem{
+						invoice.item,
+						invoice.quantity,
+					})
+				}
+
+				// sort the invoices by service date to gain the first part of the description
+				date_sorted_invoices := make(invoiceByTime, 0, len(invoices))
+				for _, d := range invoices {
+					date_sorted_invoices = append(date_sorted_invoices, d)
+				}
+
+				sort.Sort(date_sorted_invoices)
+
+				startDate = fmt.Sprintf("%v/%d", date_sorted_invoices[0].dateServiced.Month(), date_sorted_invoices[0].dateServiced.Day())
+				endDate = fmt.Sprintf("%v/%d", date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Month(), date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Day())
+
+				// build a list of items and services for each property
+				propertyDescriptions := []string{}
+
+				for property, items := range properties {
+					propertyDescriptions = append(propertyDescriptions, buildDescription(property, items))
 				}
 
 				updateFields := map[string]interface{}{}
 
+				description := fmt.Sprintf("Weekly Charges between %s and %s: %s", startDate, endDate, strings.Join(propertyDescriptions, ","))
 				// set paid and notes column for patch update
-				confirmationNumber, err := chargeStripe(customerID, currencyCode, amount)
+				confirmationNumber, err := chargeStripe(customerID, currencyCode, amount, description)
 				if err != nil {
 					updateFields[notesColumn] = fmt.Sprintf("Error charging customer through Stripe: %v", err.Error())
 					updateFields[paidColumn] = "false"
@@ -234,7 +342,7 @@ func main() {
 }
 
 // given the correct information pull a customer's payment methods and charge the provided amount to Stripe
-func chargeStripe(customerID string, currencyCode string, invoiceAmount float64) (confirmation string, err error) {
+func chargeStripe(customerID string, currencyCode string, invoiceAmount float64, description string) (confirmation string, err error) {
 	var amount int64
 
 	sc := &client.API{}
@@ -267,7 +375,7 @@ func chargeStripe(customerID string, currencyCode string, invoiceAmount float64)
 
 		pi, err := sc.PaymentIntents.New(&stripe.PaymentIntentParams{
 			Amount:        stripe.Int64(amount),
-			Description:   stripe.String("Cleaning/Product Replacement Charge"),
+			Description:   stripe.String(description),
 			Customer:      stripe.String(fmt.Sprintf("%v", customerID)),
 			Currency:      stripe.String(fmt.Sprintf("%s", currencyCode)),
 			PaymentMethod: stripe.String(paymentID),
@@ -289,4 +397,21 @@ func chargeStripe(customerID string, currencyCode string, invoiceAmount float64)
 	}
 
 	return "", errors.New("unable to chargeStripe any payment method on file")
+}
+
+// builds a string description like this: 219 Jolla Drive: item1 x2, item2 X3,
+func buildDescription(propertyName string, items []PropertyItem) string {
+	itemQuantity := map[string]int{}
+
+	for _, item := range items {
+		itemQuantity[item.item] += 1
+	}
+
+	start := fmt.Sprintf("%s: ", propertyName)
+
+	for name, quantity := range itemQuantity {
+		start = start + fmt.Sprintf("%s x%d ", name, quantity)
+	}
+
+	return start
 }

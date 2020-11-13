@@ -26,6 +26,10 @@ Charger expects your table to have at least five separate columns. These columns
 | PAID_COLUMN | `string` - Either "true" or anything else. Indicates whether or not a record was paid |
 | NOTES_COLUMN | `string` - Will record a payment reference number on success, or error information on issues |
 | DATE_COLUMN | `string` -  Date on which the invoice should be charged |
+| ITEM_COLUMN | `string` - Denotes what item the record refers to
+| QUANTITY_COLUMN | `string` - How much of ITEM_COLUMN is part of this charge
+| PROPERTY_COLUMN | `string` - Property Name
+| DATE_SERVICED_COLUMN| `string` - Date serviced column name
 
 
 #### Run
