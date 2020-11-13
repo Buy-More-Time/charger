@@ -84,7 +84,7 @@ jobs:
           ITEM_COLUMN: ${{ secrets.ITEM_COLUMN }}
           QUANTITY_COLUMN: ${{ secrets.QUANTITY_COLUMN }}
           PROPERTY_COLUMN: ${{ secrets.PROPERTY_COLUMN }}
-          DATE_SERVICED_COLUMN: $ {{ secrets.DATE_SERVICED_COLUMN }}
+          DATE_SERVICED_COLUMN: ${{ secrets.DATE_SERVICED_COLUMN }}
 
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
