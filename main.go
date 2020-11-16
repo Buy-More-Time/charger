@@ -294,8 +294,8 @@ func main() {
 
 				sort.Sort(date_sorted_invoices)
 
-				startDate = fmt.Sprintf("%v/%d", date_sorted_invoices[0].dateServiced.Month(), date_sorted_invoices[0].dateServiced.Day())
-				endDate = fmt.Sprintf("%v/%d", date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Month(), date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Day())
+				startDate = fmt.Sprintf("%v %d", date_sorted_invoices[0].dateServiced.Month(), date_sorted_invoices[0].dateServiced.Day())
+				endDate = fmt.Sprintf("%v %d", date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Month(), date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Day())
 
 				// build a list of items and services for each property
 				propertyDescriptions := []string{}
@@ -407,7 +407,7 @@ func buildDescription(propertyName string, items []PropertyItem) string {
 		itemQuantity[item.item] += 1
 	}
 
-	start := fmt.Sprintf("%s: ", propertyName)
+	start := fmt.Sprintf("%s- ", propertyName)
 
 	for name, quantity := range itemQuantity {
 		start = start + fmt.Sprintf("%s x%d ", name, quantity)
