@@ -13,7 +13,6 @@
       },
       "dnsSearchDomains": null,
       "environmentFiles": null,
-      "logConfiguration": null,
       "entryPoint": null,
       "portMappings": [],
       "command": null,
