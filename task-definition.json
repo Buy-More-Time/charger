@@ -3,6 +3,14 @@
   "executionRoleArn": null,
   "containerDefinitions": [
     {
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "awslogs-charger",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "awslogs-charger"
+        }
+      },
       "dnsSearchDomains": null,
       "environmentFiles": null,
       "logConfiguration": null,
