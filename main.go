@@ -58,7 +58,6 @@ func (p invoiceByTime) Swap(i, j int) {
 }
 
 func main() {
-	var pollInterval int
 	var staleDays int
 
 	godotenv.Load()
@@ -81,11 +80,6 @@ func main() {
 	staleDays, err := strconv.Atoi(os.Getenv("STALE_DAYS"))
 	if err != nil {
 		staleDays = -7
-	}
-
-	pollInterval, err = strconv.Atoi(os.Getenv("POLL_INTERVAL"))
-	if err != nil {
-		pollInterval = 60
 	}
 
 	airtableClient, err := airtable.NewAirtableClient(airtableAPIKey, baseID)
@@ -331,7 +325,8 @@ func main() {
 				time.Sleep(time.Second * 1)
 			}
 
-			time.Sleep(time.Duration(pollInterval) * time.Second)
+			time.Sleep(60 * time.Second)
+			fmt.Println("Starting new processing loop...")
 		}
 	}()
 
