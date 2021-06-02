@@ -111,7 +111,7 @@ func main() {
 
 			if err != nil {
 				log.Printf("error fetching airtable records %v", err)
-				return
+				continue
 			}
 
 			// generate a list of all invoices for a given customer, BuyMoreTime wants to chargeStripe all the customer's
@@ -132,7 +132,7 @@ func main() {
 				loc, err := time.LoadLocation(os.Getenv("TIMEZONE"))
 				if err != nil {
 					log.Fatal("incorrect time location!")
-					return
+					continue
 				}
 
 				val, ok = record.Fields[dateColumn]
@@ -317,7 +317,7 @@ func main() {
 					err = airtableClient.PartialUpdate(airtable.PartialUpdateOptions{TableName: tableName}, updatedRecord)
 					if err != nil {
 						log.Printf("error updating airtable records %v", err)
-						return
+						continue
 					}
 				}
 
