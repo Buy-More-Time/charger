@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/stripe/stripe-go/v71"
@@ -87,253 +85,249 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// start process loop
-	go func() {
-		for {
-			// fetch all unpaid invoice records
-			records, err := airtableClient.ListFromTable(airtable.ListRecordsOptions{
-				TableName: tableName,
-				Fields: []string{
-					stripeCustomerIDColumn,
-					invoiceAmountColumn,
-					paidColumn,
-					currencyCodeColumn,
-					dateColumn,
-					quantityColumn,
-					itemColumn,
-					propertyColumn,
-					dateServicedColumn,
-				},
-				// avoid fetching already paid, or failed invoices
-				FilterByFormula: fmt.Sprintf(`AND(NOT({%s} = 'true'), NOT({%s} = 'false'))`, paidColumn, paidColumn),
-				PageSize:        100, // max records return allowed from airtable TODO: Handle pagination when necessary, right now the numbers are too low
-			})
+	fmt.Println("Charger Running....")
 
+	// start process loop
+	for {
+		// fetch all unpaid invoice records
+		records, err := airtableClient.ListFromTable(airtable.ListRecordsOptions{
+			TableName: tableName,
+			Fields: []string{
+				stripeCustomerIDColumn,
+				invoiceAmountColumn,
+				paidColumn,
+				currencyCodeColumn,
+				dateColumn,
+				quantityColumn,
+				itemColumn,
+				propertyColumn,
+				dateServicedColumn,
+			},
+			// avoid fetching already paid, or failed invoices
+			FilterByFormula: fmt.Sprintf(`AND(NOT({%s} = 'true'), NOT({%s} = 'false'))`, paidColumn, paidColumn),
+			PageSize:        100, // max records return allowed from airtable TODO: Handle pagination when necessary, right now the numbers are too low
+		})
+
+		if err != nil {
+			log.Printf("error fetching airtable records %v", err)
+			continue
+		}
+
+		// generate a list of all invoices for a given customer, BuyMoreTime wants to chargeStripe all the customer's
+		// invoices at once instead of each individually
+		customerInvoices := map[string][]Invoice{}
+		for _, record := range records.Records {
+			// verify that if we have a value in the paid column, it's not true or false
+			val, ok := record.Fields[paidColumn]
+			if ok {
+				if fmt.Sprintf("%v", val) == "true" {
+					log.Printf("customer already charged for this record, skipping")
+					continue
+				}
+			}
+
+			invoice := Invoice{}
+			// check to see if theres a date, bill only on or after said date
+			loc, err := time.LoadLocation(os.Getenv("TIMEZONE"))
 			if err != nil {
-				log.Printf("error fetching airtable records %v", err)
+				log.Fatal("incorrect time location!")
 				continue
 			}
 
-			// generate a list of all invoices for a given customer, BuyMoreTime wants to chargeStripe all the customer's
-			// invoices at once instead of each individually
-			customerInvoices := map[string][]Invoice{}
-			for _, record := range records.Records {
-				// verify that if we have a value in the paid column, it's not true or false
-				val, ok := record.Fields[paidColumn]
-				if ok {
-					if fmt.Sprintf("%v", val) == "true" {
-						log.Printf("customer already charged for this record, skipping")
+			val, ok = record.Fields[dateColumn]
+			if ok {
+				date, err := time.ParseInLocation("2006-01-02", fmt.Sprintf("%v", val), loc)
+				if err == nil {
+					// if we're not on or after date, skip this record
+					if !time.Now().In(loc).After(date) {
+						log.Printf("date in future, skipping")
+						continue
+					}
+
+					past := time.Now().In(loc).AddDate(0, 0, staleDays)
+
+					if date.Before(past) {
+						log.Printf("pay date too old, skipping")
 						continue
 					}
 				}
 
-				invoice := Invoice{}
-				// check to see if theres a date, bill only on or after said date
-				loc, err := time.LoadLocation(os.Getenv("TIMEZONE"))
-				if err != nil {
-					log.Fatal("incorrect time location!")
-					continue
-				}
-
-				val, ok = record.Fields[dateColumn]
-				if ok {
-					date, err := time.ParseInLocation("2006-01-02", fmt.Sprintf("%v", val), loc)
-					if err == nil {
-						// if we're not on or after date, skip this record
-						if !time.Now().In(loc).After(date) {
-							log.Printf("date in future, skipping")
-							continue
-						}
-
-						past := time.Now().In(loc).AddDate(0, 0, staleDays)
-
-						if date.Before(past) {
-							log.Printf("pay date too old, skipping")
-							continue
-						}
-					}
-
-				} else if !ok {
-					log.Printf("date not present, skipping")
-					continue
-				}
-
-				val, ok = record.Fields[dateServicedColumn]
-				if ok {
-					serviceDate, err := time.ParseInLocation("2006-01-02", fmt.Sprintf("%v", val), loc)
-					if err != nil {
-						log.Printf("error parsing service date")
-						continue
-					}
-
-					invoice.dateServiced = serviceDate
-
-				} else if !ok {
-					log.Printf("service date not present, skipping")
-					continue
-				}
-
-				// we need to handle rollup fields here, so run reflect and extract if slice
-				var customerID string
-				val, ok = record.Fields[stripeCustomerIDColumn]
-				if !ok {
-					log.Printf("customerID not present, skipping")
-					continue
-				}
-
-				// we're still making some assumptions here - like it's a slice of strings and not ints
-				rt := reflect.TypeOf(val)
-				switch rt.Kind() {
-				case reflect.Slice:
-					c := val.([]interface{})
-					if len(c) > 0 {
-						customerID = fmt.Sprintf("%v", c[0])
-					}
-				case reflect.Array:
-					c := val.([]interface{})
-					if len(c) > 0 {
-						customerID = fmt.Sprintf("%v", c[0])
-					}
-				case reflect.String:
-					customerID = fmt.Sprintf("%s", val)
-				}
-
-				val, ok = record.Fields[currencyCodeColumn]
-				if !ok {
-					log.Printf("currency code not present, skipping")
-					continue
-				}
-
-				currencyCode := fmt.Sprintf("%s", val)
-				currencyCode = strings.ToLower(currencyCode)
-
-				// TODO: If you want to handle more types of currency you will need to refactor this and the function below to make it work
-				if currencyCode != "usd" {
-					log.Printf("unsupported currency code, skipping")
-					continue
-				}
-
-				// invoiceAmount must be a float64
-				invoiceAmount, ok := record.Fields[invoiceAmountColumn]
-				if !ok {
-					log.Printf("invoice amount not present, skipping")
-					continue
-				}
-
-				if invoiceAmount.(float64) == 0 {
-					log.Printf("invoice amount not greater than 0, skipping")
-					continue
-				}
-
-				quantity, ok := record.Fields[quantityColumn]
-				if !ok {
-					log.Printf("quantity not present, skipping")
-					continue
-				}
-
-				item, ok := record.Fields[itemColumn]
-				if !ok {
-					log.Printf("item not present, skipping")
-					continue
-				}
-
-				propertyName, ok := record.Fields[propertyColumn]
-				if !ok {
-					log.Printf("property not present, skipping")
-					continue
-				}
-
-				invoice.currencyCode = currencyCode
-				invoice.invoiceAmount = invoiceAmount.(float64)
-				invoice.airtableRecordID = record.ID
-				invoice.quantity = quantity.(float64)
-				invoice.item = fmt.Sprintf("%v", item)
-				invoice.property = fmt.Sprintf("%v", propertyName)
-
-				customerInvoices[customerID] = append(customerInvoices[customerID], invoice)
+			} else if !ok {
+				log.Printf("date not present, skipping")
+				continue
 			}
 
-			// for each customer create a chargeStripe for all invoices sharing the same currency
-			for customerID, invoices := range customerInvoices {
-				var amount float64
-				var currencyCode string
-
-				// month/day formatted strings
-				var startDate string
-				var endDate string
-
-				properties := map[string][]PropertyItem{}
-
-				for _, invoice := range invoices {
-					amount += invoice.invoiceAmount
-
-					// TODO: if you plan on support multiple currencies, this will need to be ripped out and redone
-					currencyCode = invoice.currencyCode
-
-					if len(properties[invoice.property]) == 0 {
-						properties[invoice.property] = []PropertyItem{}
-					}
-
-					properties[invoice.property] = append(properties[invoice.property], PropertyItem{
-						invoice.item,
-						invoice.quantity,
-					})
-				}
-
-				// sort the invoices by service date to gain the first part of the description
-				date_sorted_invoices := make(invoiceByTime, 0, len(invoices))
-				for _, d := range invoices {
-					date_sorted_invoices = append(date_sorted_invoices, d)
-				}
-
-				sort.Sort(date_sorted_invoices)
-
-				startDate = fmt.Sprintf("%v %d", date_sorted_invoices[0].dateServiced.Month(), date_sorted_invoices[0].dateServiced.Day())
-				endDate = fmt.Sprintf("%v %d", date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Month(), date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Day())
-
-				// build a list of items and services for each property
-				propertyDescriptions := []string{}
-
-				for property, items := range properties {
-					propertyDescriptions = append(propertyDescriptions, buildDescription(property, items))
-				}
-
-				updateFields := map[string]interface{}{}
-
-				description := fmt.Sprintf("Weekly Charges between %s and %s: %s", startDate, endDate, strings.Join(propertyDescriptions, ","))
-				// set paid and notes column for patch update
-				confirmationNumber, err := chargeStripe(customerID, currencyCode, amount, description)
+			val, ok = record.Fields[dateServicedColumn]
+			if ok {
+				serviceDate, err := time.ParseInLocation("2006-01-02", fmt.Sprintf("%v", val), loc)
 				if err != nil {
-					updateFields[notesColumn] = fmt.Sprintf("Error charging customer through Stripe: %v", err.Error())
-					updateFields[paidColumn] = "false"
-				} else {
-					updateFields[notesColumn] = confirmationNumber
-					updateFields[paidColumn] = "true"
+					log.Printf("error parsing service date")
+					continue
 				}
 
-				for _, invoice := range invoices {
-					// update only the notes and paid columns
-					updatedRecord := airtable.Record{ID: invoice.airtableRecordID, Fields: updateFields}
-					err = airtableClient.PartialUpdate(airtable.PartialUpdateOptions{TableName: tableName}, updatedRecord)
-					if err != nil {
-						log.Printf("error updating airtable records %v", err)
-						continue
-					}
-				}
+				invoice.dateServiced = serviceDate
 
-				// don't overload the Airtable API
-				time.Sleep(time.Second * 1)
+			} else if !ok {
+				log.Printf("service date not present, skipping")
+				continue
 			}
 
-			time.Sleep(60 * time.Second)
-			fmt.Println("Starting new processing loop...")
+			// we need to handle rollup fields here, so run reflect and extract if slice
+			var customerID string
+			val, ok = record.Fields[stripeCustomerIDColumn]
+			if !ok {
+				log.Printf("customerID not present, skipping")
+				continue
+			}
+
+			// we're still making some assumptions here - like it's a slice of strings and not ints
+			rt := reflect.TypeOf(val)
+			switch rt.Kind() {
+			case reflect.Slice:
+				c := val.([]interface{})
+				if len(c) > 0 {
+					customerID = fmt.Sprintf("%v", c[0])
+				}
+			case reflect.Array:
+				c := val.([]interface{})
+				if len(c) > 0 {
+					customerID = fmt.Sprintf("%v", c[0])
+				}
+			case reflect.String:
+				customerID = fmt.Sprintf("%s", val)
+			}
+
+			val, ok = record.Fields[currencyCodeColumn]
+			if !ok {
+				log.Printf("currency code not present, skipping")
+				continue
+			}
+
+			currencyCode := fmt.Sprintf("%s", val)
+			currencyCode = strings.ToLower(currencyCode)
+
+			// TODO: If you want to handle more types of currency you will need to refactor this and the function below to make it work
+			if currencyCode != "usd" {
+				log.Printf("unsupported currency code, skipping")
+				continue
+			}
+
+			// invoiceAmount must be a float64
+			invoiceAmount, ok := record.Fields[invoiceAmountColumn]
+			if !ok {
+				log.Printf("invoice amount not present, skipping")
+				continue
+			}
+
+			if invoiceAmount.(float64) == 0 {
+				log.Printf("invoice amount not greater than 0, skipping")
+				continue
+			}
+
+			quantity, ok := record.Fields[quantityColumn]
+			if !ok {
+				log.Printf("quantity not present, skipping")
+				continue
+			}
+
+			item, ok := record.Fields[itemColumn]
+			if !ok {
+				log.Printf("item not present, skipping")
+				continue
+			}
+
+			propertyName, ok := record.Fields[propertyColumn]
+			if !ok {
+				log.Printf("property not present, skipping")
+				continue
+			}
+
+			invoice.currencyCode = currencyCode
+			invoice.invoiceAmount = invoiceAmount.(float64)
+			invoice.airtableRecordID = record.ID
+			invoice.quantity = quantity.(float64)
+			invoice.item = fmt.Sprintf("%v", item)
+			invoice.property = fmt.Sprintf("%v", propertyName)
+
+			customerInvoices[customerID] = append(customerInvoices[customerID], invoice)
 		}
-	}()
 
-	fmt.Println("Charger Running....")
-	sc := make(chan os.Signal, 1)
-	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
-	<-sc
+		// for each customer create a chargeStripe for all invoices sharing the same currency
+		for customerID, invoices := range customerInvoices {
+			var amount float64
+			var currencyCode string
+
+			// month/day formatted strings
+			var startDate string
+			var endDate string
+
+			properties := map[string][]PropertyItem{}
+
+			for _, invoice := range invoices {
+				amount += invoice.invoiceAmount
+
+				// TODO: if you plan on support multiple currencies, this will need to be ripped out and redone
+				currencyCode = invoice.currencyCode
+
+				if len(properties[invoice.property]) == 0 {
+					properties[invoice.property] = []PropertyItem{}
+				}
+
+				properties[invoice.property] = append(properties[invoice.property], PropertyItem{
+					invoice.item,
+					invoice.quantity,
+				})
+			}
+
+			// sort the invoices by service date to gain the first part of the description
+			date_sorted_invoices := make(invoiceByTime, 0, len(invoices))
+			for _, d := range invoices {
+				date_sorted_invoices = append(date_sorted_invoices, d)
+			}
+
+			sort.Sort(date_sorted_invoices)
+
+			startDate = fmt.Sprintf("%v %d", date_sorted_invoices[0].dateServiced.Month(), date_sorted_invoices[0].dateServiced.Day())
+			endDate = fmt.Sprintf("%v %d", date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Month(), date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Day())
+
+			// build a list of items and services for each property
+			propertyDescriptions := []string{}
+
+			for property, items := range properties {
+				propertyDescriptions = append(propertyDescriptions, buildDescription(property, items))
+			}
+
+			updateFields := map[string]interface{}{}
+
+			description := fmt.Sprintf("Weekly Charges between %s and %s: %s", startDate, endDate, strings.Join(propertyDescriptions, ","))
+			// set paid and notes column for patch update
+			confirmationNumber, err := chargeStripe(customerID, currencyCode, amount, description)
+			if err != nil {
+				updateFields[notesColumn] = fmt.Sprintf("Error charging customer through Stripe: %v", err.Error())
+				updateFields[paidColumn] = "false"
+			} else {
+				updateFields[notesColumn] = confirmationNumber
+				updateFields[paidColumn] = "true"
+			}
+
+			for _, invoice := range invoices {
+				// update only the notes and paid columns
+				updatedRecord := airtable.Record{ID: invoice.airtableRecordID, Fields: updateFields}
+				err = airtableClient.PartialUpdate(airtable.PartialUpdateOptions{TableName: tableName}, updatedRecord)
+				if err != nil {
+					log.Printf("error updating airtable records %v", err)
+					continue
+				}
+			}
+
+			// don't overload the Airtable API
+			time.Sleep(time.Second * 1)
+		}
+
+		time.Sleep(60 * time.Second)
+		fmt.Println("Starting new processing loop...")
+	}
+
 }
 
 // given the correct information pull a customer's payment methods and charge the provided amount to Stripe
