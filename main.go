@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,37 +10,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stripe/stripe-go/v71/invoiceitem"
+
+	"github.com/stripe/stripe-go/v71/invoice"
+
 	"github.com/stripe/stripe-go/v71"
-	"github.com/stripe/stripe-go/v71/client"
 
 	"github.com/dnoberon/charger/airtable"
 
 	"github.com/joho/godotenv"
 )
 
-type Invoice struct {
-	airtableRecordID string
-	property         string
-	invoiceAmount    float64
-	currencyCode     string
+type InvoiceItem struct {
 	item             string
-	quantity         float64
+	quantity         int64
+	amount           float64
+	currencyCode     string
+	property         string
+	airtableRecordID string
 	dateServiced     time.Time
 }
 
-type PropertyInvoice struct {
-	name  string
-	items map[string]float64
-}
-
-// sum the invoices and create the data structure necessary for handling line items in the description
-type PropertyItem struct {
-	item     string
-	quantity float64
-}
-
 // needed to sort the invoices by time serviced
-type invoiceByTime []Invoice
+type invoiceByTime []InvoiceItem
 
 func (p invoiceByTime) Len() int {
 	return len(p)
@@ -89,34 +80,31 @@ func main() {
 
 	// start process loop
 	for {
-		// fetch all unpaid invoice records
-		records, err := airtableClient.ListFromTable(airtable.ListRecordsOptions{
-			TableName: tableName,
-			Fields: []string{
-				stripeCustomerIDColumn,
-				invoiceAmountColumn,
-				paidColumn,
-				currencyCodeColumn,
-				dateColumn,
-				quantityColumn,
-				itemColumn,
-				propertyColumn,
-				dateServicedColumn,
-			},
-			// avoid fetching already paid, or failed invoices
-			FilterByFormula: fmt.Sprintf(`AND(NOT({%s} = 'true'), NOT({%s} = 'false'))`, paidColumn, paidColumn),
-			PageSize:        100, // max records return allowed from airtable TODO: Handle pagination when necessary, right now the numbers are too low
-		})
+		offset := ""
+		records := []airtable.Record{}
 
-		if err != nil {
-			log.Printf("error fetching airtable records %v", err)
-			continue
+		// inner loop handles constantly fetching from airtable until we have all the records
+		for {
+			results, err := fetchAirtableRecords(offset)
+			if err != nil {
+				log.Printf("error fetching airtable records %v", err)
+				break
+			}
+
+			records = append(records, results.Records...)
+
+			// if we don't have an offset parameter, then we have fetched all records
+			if results.Offset == "" {
+				break
+			}
+
+			offset = results.Offset
 		}
 
-		// generate a list of all invoices for a given customer, BuyMoreTime wants to chargeStripe all the customer's
-		// invoices at once instead of each individually
-		customerInvoices := map[string][]Invoice{}
-		for _, record := range records.Records {
+		// each record represents a possible invoice item, key is the stripe customer ID - so we charge them all
+		// at the same time to the right people
+		customerInvoices := map[string][]InvoiceItem{}
+		for _, record := range records {
 			// verify that if we have a value in the paid column, it's not true or false
 			val, ok := record.Fields[paidColumn]
 			if ok {
@@ -126,7 +114,7 @@ func main() {
 				}
 			}
 
-			invoice := Invoice{}
+			invoice := InvoiceItem{}
 			// check to see if theres a date, bill only on or after said date
 			loc, err := time.LoadLocation(os.Getenv("TIMEZONE"))
 			if err != nil {
@@ -203,14 +191,7 @@ func main() {
 				continue
 			}
 
-			currencyCode := fmt.Sprintf("%s", val)
-			currencyCode = strings.ToLower(currencyCode)
-
-			// TODO: If you want to handle more types of currency you will need to refactor this and the function below to make it work
-			if currencyCode != "usd" {
-				log.Printf("unsupported currency code, skipping")
-				continue
-			}
+			invoice.currencyCode = strings.ToLower(fmt.Sprintf("%s", val))
 
 			// invoiceAmount must be a float64
 			invoiceAmount, ok := record.Fields[invoiceAmountColumn]
@@ -224,11 +205,15 @@ func main() {
 				continue
 			}
 
+			invoice.amount = invoiceAmount.(float64)
+
 			quantity, ok := record.Fields[quantityColumn]
 			if !ok {
 				log.Printf("quantity not present, skipping")
 				continue
 			}
+
+			invoice.quantity = quantity.(int64)
 
 			item, ok := record.Fields[itemColumn]
 			if !ok {
@@ -236,50 +221,24 @@ func main() {
 				continue
 			}
 
+			invoice.item = fmt.Sprintf("%v", item)
+
 			propertyName, ok := record.Fields[propertyColumn]
 			if !ok {
 				log.Printf("property not present, skipping")
 				continue
 			}
 
-			invoice.currencyCode = currencyCode
-			invoice.invoiceAmount = invoiceAmount.(float64)
-			invoice.airtableRecordID = record.ID
-			invoice.quantity = quantity.(float64)
-			invoice.item = fmt.Sprintf("%v", item)
 			invoice.property = fmt.Sprintf("%v", propertyName)
 
+			invoice.airtableRecordID = record.ID
 			customerInvoices[customerID] = append(customerInvoices[customerID], invoice)
 		}
 
 		// for each customer create a chargeStripe for all invoices sharing the same currency
 		for customerID, invoices := range customerInvoices {
-			var amount float64
-			var currencyCode string
-
-			// month/day formatted strings
-			var startDate string
-			var endDate string
-
-			properties := map[string][]PropertyItem{}
-
-			for _, invoice := range invoices {
-				amount += invoice.invoiceAmount
-
-				// TODO: if you plan on support multiple currencies, this will need to be ripped out and redone
-				currencyCode = invoice.currencyCode
-
-				if len(properties[invoice.property]) == 0 {
-					properties[invoice.property] = []PropertyItem{}
-				}
-
-				properties[invoice.property] = append(properties[invoice.property], PropertyItem{
-					invoice.item,
-					invoice.quantity,
-				})
-			}
-
-			// sort the invoices by service date to gain the first part of the description
+			// sort the invoices by date serviced prior to charging them to stripe - the invoice will look a lot
+			// cleaner this way
 			date_sorted_invoices := make(invoiceByTime, 0, len(invoices))
 			for _, d := range invoices {
 				date_sorted_invoices = append(date_sorted_invoices, d)
@@ -287,21 +246,10 @@ func main() {
 
 			sort.Sort(date_sorted_invoices)
 
-			startDate = fmt.Sprintf("%v %d", date_sorted_invoices[0].dateServiced.Month(), date_sorted_invoices[0].dateServiced.Day())
-			endDate = fmt.Sprintf("%v %d", date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Month(), date_sorted_invoices[len(date_sorted_invoices)-1].dateServiced.Day())
-
-			// build a list of items and services for each property
-			propertyDescriptions := []string{}
-
-			for property, items := range properties {
-				propertyDescriptions = append(propertyDescriptions, buildDescription(property, items))
-			}
-
 			updateFields := map[string]interface{}{}
 
-			description := fmt.Sprintf("Weekly Charges between %s and %s: %s", startDate, endDate, strings.Join(propertyDescriptions, ","))
 			// set paid and notes column for patch update
-			confirmationNumber, err := chargeStripe(customerID, currencyCode, amount, description)
+			confirmationNumber, err := chargeStripe(customerID, invoices)
 			if err != nil {
 				updateFields[notesColumn] = fmt.Sprintf("Error charging customer through Stripe: %v", err.Error())
 				updateFields[paidColumn] = "false"
@@ -330,77 +278,84 @@ func main() {
 
 }
 
-// given the correct information pull a customer's payment methods and charge the provided amount to Stripe
-func chargeStripe(customerID string, currencyCode string, invoiceAmount float64, description string) (confirmation string, err error) {
-	var amount int64
-
-	sc := &client.API{}
-	sc.Init(os.Getenv("STRIPE_API_KEY"), nil)
-
-	switch currencyCode {
-	case "usd":
-		amount = int64(invoiceAmount * 100)
-	default:
-		return "", errors.New("currency not supported")
+// fetches the airtable records, accepts an offset parameter if the previous response isn't the end of the records
+func fetchAirtableRecords(offset string) (airtable.ListResponse, error) {
+	options := airtable.ListRecordsOptions{
+		TableName: os.Getenv("TABLENAME"),
+		Fields: []string{
+			os.Getenv("STRIPE_CUSTOMER_ID_COLUMN"),
+			os.Getenv("INVOICE_AMOUNT_COLUMN"),
+			os.Getenv("PAID_COLUMN"),
+			os.Getenv("CURRENCY_CODE_COLUMN"),
+			os.Getenv("DATE_COLUMN"),
+			os.Getenv("QUANTITY_COLUMN"),
+			os.Getenv("ITEM_COLUMN"),
+			os.Getenv("PROPERTY_COLUMN"),
+			os.Getenv("DATE_SERVICED_COLUMN"),
+		},
+		FilterByFormula: fmt.Sprintf(`AND(NOT({%s} = 'true'), NOT({%s} = 'false'))`, os.Getenv("PAID_COLUMN"), os.Getenv("PAID_COLUMN")),
+		PageSize:        100, // max records return allowed from airtable
 	}
 
-	if amount <= 0 {
-		return "", errors.New("cannot chargeStripe 0 amount")
+	if offset != "" {
+		options.Offset = offset
 	}
 
-	i := sc.PaymentMethods.List(&stripe.PaymentMethodListParams{
-		Customer: stripe.String(fmt.Sprintf("%v", customerID)),
-		Type:     stripe.String("card"),
-	})
-
-	if i.Err() != nil {
-		return "", i.Err()
+	airtableClient, err := airtable.NewAirtableClient(os.Getenv("AIRTABLE_API_KEY"), os.Getenv("AIRTABLE_BASE_ID"))
+	if err != nil {
+		return airtable.ListResponse{}, err
 	}
 
-	var paid bool
-
-	for i.Next() && !paid {
-		paymentID := i.PaymentMethod().ID
-
-		pi, err := sc.PaymentIntents.New(&stripe.PaymentIntentParams{
-			Amount:        stripe.Int64(amount),
-			Description:   stripe.String(description),
-			Customer:      stripe.String(fmt.Sprintf("%v", customerID)),
-			Currency:      stripe.String(fmt.Sprintf("%s", currencyCode)),
-			PaymentMethod: stripe.String(paymentID),
-		})
-
-		if err != nil {
-			return "", err
-		}
-
-		confirm, err := sc.PaymentIntents.Confirm(pi.ID, &stripe.PaymentIntentConfirmParams{
-			PaymentMethod: stripe.String(paymentID),
-		})
-
-		if err != nil {
-			return "", err
-		}
-
-		return confirm.ID, nil
-	}
-
-	return "", errors.New("unable to chargeStripe any payment method on file")
+	return airtableClient.ListFromTable(options)
 }
 
-// builds a string description like this: 219 Jolla Drive: item1 x2, item2 X3,
-func buildDescription(propertyName string, items []PropertyItem) string {
-	itemQuantity := map[string]int{}
+// given the correct information pull a customer's payment methods and charge the provided amount to Stripe
+func chargeStripe(customerID string, items []InvoiceItem) (invoiceID string, err error) {
+	if len(items) <= 0 {
+		return "", nil
+	}
 
+	stripe.Key = os.Getenv("STRIPE_API_KEY")
+
+	in, err := invoice.New(&stripe.InvoiceParams{
+		Customer:         stripe.String(customerID),
+		AutoAdvance:      stripe.Bool(true),
+		CollectionMethod: stripe.String("charge_automatically"),
+		Description:      stripe.String("Weekly cleaning and item replacement charges for properties managed."),
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	// add each item to the invoice
 	for _, item := range items {
-		itemQuantity[item.item] += 1
+		var amount int64
+
+		switch item.currencyCode {
+		case "usd":
+			amount = int64(item.amount * 100)
+		default:
+			continue
+		}
+
+		if amount <= 0 {
+			continue
+		}
+
+		_, err = invoiceitem.New(&stripe.InvoiceItemParams{
+			Customer:    stripe.String(customerID),
+			Amount:      stripe.Int64(amount),
+			Currency:    stripe.String(item.currencyCode),
+			Invoice:     stripe.String(in.ID),
+			Quantity:    stripe.Int64(item.quantity),
+			Description: stripe.String(fmt.Sprintf("%s for %s on %s", item.item, item.property, item.dateServiced.String())),
+		})
+
+		if err != nil {
+			log.Printf("unable to create stripe invoice item for airtable record %s - %v", item.airtableRecordID, err.Error())
+		}
 	}
 
-	start := fmt.Sprintf("%s- ", propertyName)
-
-	for name, quantity := range itemQuantity {
-		start = start + fmt.Sprintf("%s x%d ", name, quantity)
-	}
-
-	return start
+	return in.ID, nil
 }

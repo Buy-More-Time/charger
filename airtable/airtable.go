@@ -28,6 +28,7 @@ type ListRecordsOptions struct {
 	Fields          []string
 	FilterByFormula string
 	PageSize        int
+	Offset          string
 }
 
 type PartialUpdateOptions struct {
@@ -57,6 +58,7 @@ func NewAirtableClient(apiKey string, baseID string) (Client, error) {
 
 type ListResponse struct {
 	Records []Record `json:"records"`
+	Offset  string   `json:"offset"`
 }
 
 type ListRequest struct {
@@ -86,6 +88,10 @@ func (c *Client) ListFromTable(options ListRecordsOptions) (list ListResponse, e
 
 	if options.FilterByFormula != "" {
 		query.Add("filterByFormula", options.FilterByFormula)
+	}
+
+	if options.Offset != "" {
+		query.Add("offset", options.Offset)
 	}
 
 	uri.RawQuery = query.Encode()
