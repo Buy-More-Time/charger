@@ -213,7 +213,7 @@ func main() {
 				continue
 			}
 
-			invoice.quantity = quantity.(int64)
+			invoice.quantity = int64(quantity.(float64))
 
 			item, ok := record.Fields[itemColumn]
 			if !ok {
@@ -317,17 +317,6 @@ func chargeStripe(customerID string, items []InvoiceItem) (invoiceID string, err
 
 	stripe.Key = os.Getenv("STRIPE_API_KEY")
 
-	in, err := invoice.New(&stripe.InvoiceParams{
-		Customer:         stripe.String(customerID),
-		AutoAdvance:      stripe.Bool(true),
-		CollectionMethod: stripe.String("charge_automatically"),
-		Description:      stripe.String("Weekly cleaning and item replacement charges for properties managed."),
-	})
-
-	if err != nil {
-		return "", err
-	}
-
 	// add each item to the invoice
 	for _, item := range items {
 		var amount int64
@@ -343,12 +332,11 @@ func chargeStripe(customerID string, items []InvoiceItem) (invoiceID string, err
 			continue
 		}
 
+		// TODO: if you want this to actually respect the quantity then the airtable invoice table needs to be modified
 		_, err = invoiceitem.New(&stripe.InvoiceItemParams{
 			Customer:    stripe.String(customerID),
 			Amount:      stripe.Int64(amount),
 			Currency:    stripe.String(item.currencyCode),
-			Invoice:     stripe.String(in.ID),
-			Quantity:    stripe.Int64(item.quantity),
 			Description: stripe.String(fmt.Sprintf("%s for %s on %s", item.item, item.property, item.dateServiced.String())),
 		})
 
@@ -357,5 +345,12 @@ func chargeStripe(customerID string, items []InvoiceItem) (invoiceID string, err
 		}
 	}
 
-	return in.ID, nil
+	in, err := invoice.New(&stripe.InvoiceParams{
+		Customer:         stripe.String(customerID),
+		AutoAdvance:      stripe.Bool(true),
+		CollectionMethod: stripe.String("send_invoice"),
+		Description:      stripe.String("Weekly cleaning and item replacement charges for properties managed."),
+	})
+
+	return in.ID, err
 }
