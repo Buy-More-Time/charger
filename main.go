@@ -349,6 +349,7 @@ func chargeStripe(customerID string, items []InvoiceItem) (invoiceID string, err
 		Customer:         stripe.String(customerID),
 		AutoAdvance:      stripe.Bool(true),
 		CollectionMethod: stripe.String("send_invoice"),
+		DaysUntilDue:     stripe.Int64(30),
 		Description:      stripe.String("Weekly cleaning and item replacement charges for properties managed."),
 	})
 
